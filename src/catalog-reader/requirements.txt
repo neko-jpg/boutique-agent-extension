@@ -1,0 +1,6 @@
+Flask==2.2.2
+gunicorn==20.1.0
+grpcio==1.46.3
+grpcio-tools==1.46.3
+protobuf==3.20.1
+google-api-python-client==2.45.0

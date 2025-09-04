@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recommendation-agent
+spec:
+  selector:
+    matchLabels:
+      app: recommendation-agent
+  template:
+    metadata:
+      labels:
+        app: recommendation-agent
+    spec:
+      containers:
+      - name: server
+        image: recommendation-agent # This will be replaced by the CI/CD pipeline
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: CATALOG_READER_URL
+          value: "http://catalog-reader:80"
+        - name: GOOGLE_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gemini-api-key-secret
+              key: api_key
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: recommendation-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: recommendation-agent
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080

@@ -123,7 +123,8 @@ def add_item_to_cart(product_id: str, quantity: int) -> str:
 
 # --- Generative AI Model Setup ---
 
-SYSTEM_PROMPT = """
+# Default Prompt (Variant A)
+SYSTEM_PROMPT_A = """
 You are an expert shopping assistant for the "Online Boutique".
 You have two primary jobs: finding products and adding them to the user's cart.
 You must respond with a valid JSON object and nothing else.
@@ -154,32 +155,39 @@ You must respond with a valid JSON object and nothing else.
 2.  You will need the `product_id` (which is the `sku` from a previous suggestion) and the `quantity`. If the quantity is not specified, assume it is 1.
 3.  After calling the tool, it will return a confirmation message.
 4.  Your final response in this case MUST be a simple JSON object with a single key, "message". The value of this key should be the confirmation message from the tool.
-
-## Example of Finding Products:
-IF the user query is "I need some comfortable shoes"
-AND the tool returns a list of shoes,
-THEN your final response MUST be in the `{"suggestions": [...], "compare": {...}}` format.
-
-## Example of Adding to Cart:
-IF the user query is "Okay, add two of the running shoes to my cart"
-AND the SKU for "Running Shoes" is "OLJCESPC7Z"
-AND you call `add_item_to_cart(product_id="OLJCESPC7Z", quantity=2)`
-AND the tool returns "Successfully added 2 of product OLJCESPC7Z to the cart."
-THEN your final response to the user MUST be this exact JSON object:
-```json
-{
-  "message": "Successfully added 2 of product OLJCESPC7Z to the cart."
-}
-```
-Now, begin.
 """
 
-model = genai.GenerativeModel(
-    model_name='gemini-1.5-pro-latest',
-    tools=[search_products, get_product_details, add_item_to_cart],
-    system_instruction=SYSTEM_PROMPT,
-    generation_config={"response_mime_type": "application/json"}
-)
+# Enthusiastic Prompt (Variant B)
+SYSTEM_PROMPT_B = """
+You are an enthusiastic and persuasive shopping assistant for the "Online Boutique"!
+Your goal is to help users find amazing products and add them to their cart, making them excited about their purchase.
+You must respond with a valid JSON object and nothing else.
+
+# Finding Products
+- When a user wants to find a product, call the `search_products` tool and return a JSON object with "suggestions" and "compare" keys.
+
+## Instructions for Finding Products:
+1.  Call `search_products` with a great search term from the user's query.
+2.  Process the amazing list of products the tool returns.
+3.  Your final response MUST be a single JSON object with "suggestions" and "compare" keys.
+4.  **The "suggestions" key**:
+    *   This is a list of incredible products you're recommending.
+    *   Each product needs a `sku`, `name`, `price`, and `why`.
+    *   The `sku` is the product `id`, `name` is its name, and `price` is the number from the `units` field of `priceUsd`.
+    *   The `why` field is your chance to shine! Write a short, enthusiastic, and sales-oriented sentence to get the user excited. Use exclamation points!
+5.  **The "compare" key**:
+    *   This is a comparison table to show off the products.
+    *   It needs "columns" (["Name", "Price (USD)", "Categories"]) and "rows" (a list of lists with the product data).
+
+# Cart Management
+- When the user wants to add an item to their cart, use the `add_item_to_cart` tool.
+
+## Instructions for Cart Management:
+1.  When a user says to add an item, use the `add_item_to_cart` tool immediately.
+2.  You need the `product_id` (the `sku`) and the `quantity` (default to 1 if they don't say).
+3.  After the tool works its magic, it will give you a confirmation message.
+4.  Your final response MUST be a simple JSON object: `{"message": "Confirmation message from the tool"}`.
+"""
 
 # --- Flask API Endpoint ---
 
@@ -190,9 +198,25 @@ def recommend():
         return jsonify({"error": "Request body must be JSON with a 'query' field."}), 400
 
     user_query = data['query']
-    print(f"API: Received query: {user_query}")
+    variant = data.get('variant', 'A').upper()
 
+    print(f"API: Received query: '{user_query}' with variant: '{variant}'")
+
+    # Select the prompt based on the variant
+    if variant == 'B':
+        prompt = SYSTEM_PROMPT_B
+    else:
+        prompt = SYSTEM_PROMPT_A
+
+    # Initialize the model per-request to allow for dynamic prompt selection
+    model = genai.GenerativeModel(
+        model_name='gemini-1.5-pro-latest',
+        tools=[search_products, get_product_details, add_item_to_cart],
+        system_instruction=prompt,
+        generation_config={"response_mime_type": "application/json"}
+    )
     chat = model.start_chat(enable_automatic_function_calling=True)
+
 
     try:
         start_time = time.time()

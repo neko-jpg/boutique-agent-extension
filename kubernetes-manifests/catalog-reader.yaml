@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-reader
+spec:
+  selector:
+    matchLabels:
+      app: catalog-reader
+  template:
+    metadata:
+      labels:
+        app: catalog-reader
+    spec:
+      containers:
+      - name: server
+        image: catalog-reader # This will be replaced by the CI/CD pipeline
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: PRODUCT_CATALOG_SERVICE_ADDR
+          value: "productcatalogservice:3550"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-reader
+spec:
+  type: ClusterIP
+  selector:
+    app: catalog-reader
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080

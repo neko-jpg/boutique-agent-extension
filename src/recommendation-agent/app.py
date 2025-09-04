@@ -11,6 +11,9 @@ import grpc
 import demo_pb2
 import demo_pb2_grpc
 
+# --- Caching ---
+from cachetools import LRUCache, cached
+
 # --- Observability ---
 from opentelemetry import metrics
 from opentelemetry.sdk.metrics import MeterProvider
@@ -30,6 +33,10 @@ llm_latency_metric = meter.create_histogram(
     unit="ms",
     description="The latency of the call to the generative AI model"
 )
+
+# --- Cache Initialization ---
+# Create an LRU cache with a maximum size of 100 entries
+reco_cache = LRUCache(maxsize=100)
 
 
 app = Flask(__name__)
@@ -189,6 +196,40 @@ You must respond with a valid JSON object and nothing else.
 4.  Your final response MUST be a simple JSON object: `{"message": "Confirmation message from the tool"}`.
 """
 
+@cached(reco_cache)
+def get_recommendation_from_model(user_query: str, variant: str) -> str:
+    """
+    Gets a recommendation from the Generative AI model.
+    This function is cached based on its arguments (user_query, variant).
+    """
+    print(f"CACHE MISS: Calling Generative AI model for query: '{user_query}', variant: '{variant}'")
+    # Select the prompt based on the variant
+    if variant == 'B':
+        prompt = SYSTEM_PROMPT_B
+    else:
+        prompt = SYSTEM_PROMPT_A
+
+    # Initialize the model
+    model = genai.GenerativeModel(
+        model_name='gemini-1.5-pro-latest',
+        tools=[search_products, get_product_details, add_item_to_cart],
+        system_instruction=prompt,
+        generation_config={"response_mime_type": "application/json"}
+    )
+    chat = model.start_chat(enable_automatic_function_calling=True)
+
+    start_time = time.time()
+    response = chat.send_message(user_query)
+    end_time = time.time()
+
+    # Record the latency
+    latency_ms = (end_time - start_time) * 1000
+    llm_latency_metric.record(latency_ms)
+    print(f"METRIC: LLM latency: {latency_ms:.2f} ms")
+
+    return response.text
+
+
 # --- Flask API Endpoint ---
 
 @app.route('/recommend', methods=['POST'])
@@ -200,45 +241,16 @@ def recommend():
     user_query = data['query']
     variant = data.get('variant', 'A').upper()
 
-    print(f"API: Received query: '{user_query}' with variant: '{variant}'")
-
-    # Select the prompt based on the variant
-    if variant == 'B':
-        prompt = SYSTEM_PROMPT_B
-    else:
-        prompt = SYSTEM_PROMPT_A
-
-    # Initialize the model per-request to allow for dynamic prompt selection
-    model = genai.GenerativeModel(
-        model_name='gemini-1.5-pro-latest',
-        tools=[search_products, get_product_details, add_item_to_cart],
-        system_instruction=prompt,
-        generation_config={"response_mime_type": "application/json"}
-    )
-    chat = model.start_chat(enable_automatic_function_calling=True)
-
-
     try:
-        start_time = time.time()
-        response = chat.send_message(user_query)
-        end_time = time.time()
-
-        # Record the latency
-        latency_ms = (end_time - start_time) * 1000
-        llm_latency_metric.record(latency_ms)
-        print(f"METRIC: LLM latency: {latency_ms:.2f} ms")
-
+        # Get the recommendation, potentially from the cache
+        response_text = get_recommendation_from_model(user_query, variant)
 
         # With JSON mode enabled, the response text is a guaranteed JSON string.
-        final_json_response = json.loads(response.text)
+        final_json_response = json.loads(response_text)
         return jsonify(final_json_response)
 
     except (json.JSONDecodeError, Exception) as e:
-        # Check if response object exists before trying to access its text attribute
-        raw_response_text = "N/A"
-        if 'response' in locals() and hasattr(response, 'text'):
-            raw_response_text = response.text
-        error_message = f"Failed to get a valid JSON response from the model. Error: {e}. Raw response: {raw_response_text}"
+        error_message = f"Failed to get a valid JSON response from the model or cache. Error: {e}"
         print(f"API ERROR: {error_message}")
         return jsonify({"error": error_message}), 500
 

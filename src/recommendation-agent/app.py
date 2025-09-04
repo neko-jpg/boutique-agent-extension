@@ -46,6 +46,7 @@ CATALOG_READER_URL = os.environ.get("CATALOG_READER_URL")
 if not CATALOG_READER_URL:
     raise RuntimeError("CATALOG_READER_URL environment variable not set.")
 
+PROMO_AGENT_URL = os.environ.get("PROMO_AGENT_URL") # e.g. "http://promo-agent:8080"
 CART_SERVICE_ADDR = os.environ.get('CART_SERVICE_ADDR', 'cartservice:7070')
 
 try:
@@ -127,73 +128,81 @@ def add_item_to_cart(product_id: str, quantity: int) -> str:
         print(f"TOOL ERROR: An unexpected error occurred: {e}")
         return f"Error: An unexpected error occurred while adding item to cart."
 
+def add_to_watchlist(product_id: str) -> str:
+    """
+    Adds a product to the user's price drop watchlist.
+    Args:
+        product_id: The ID (SKU) of the product to watch.
+    Returns:
+        A confirmation message string.
+    """
+    print(f"TOOL: Adding product {product_id} to watchlist.")
+    if not PROMO_AGENT_URL:
+        return "Error: The promo agent is not configured, so I cannot add items to the watchlist."
+
+    try:
+        response = requests.post(f"{PROMO_AGENT_URL}/watchlist", json={"product_id": product_id})
+        response.raise_for_status()
+        return f"Success! The product {product_id} has been added to your price drop watchlist."
+    except requests.exceptions.RequestException as e:
+        print(f"TOOL ERROR: Failed to connect to promo agent: {e}")
+        return f"Error: Could not add item to watchlist. Failed to connect to the promo agent."
+
 
 # --- Generative AI Model Setup ---
 
 # Default Prompt (Variant A)
 SYSTEM_PROMPT_A = """
 You are an expert shopping assistant for the "Online Boutique".
-You have two primary jobs: finding products and adding them to the user's cart.
+You have three primary jobs: finding products, adding them to the cart, and adding them to a watchlist.
 You must respond with a valid JSON object and nothing else.
 
 # Finding Products
 - When the user asks to find a product, your goal is to call the `search_products` tool and then return a JSON object with "suggestions" and "compare" keys.
+- **After providing a good suggestion, you should proactively ask the user if they want to add an item to their cart OR to the price watchlist.**
 
 ## Instructions for Finding Products:
-1.  Call the `search_products` tool with a relevant search term from the user's query.
-2.  The tool will return a JSON string containing a list of products. You need to process this list.
-3.  Your final response MUST be a single JSON object with two top-level keys: "suggestions" and "compare".
-4.  **The "suggestions" key**:
-    *   The value must be a list of JSON objects, where each object represents a product you recommend.
-    *   For each product, create a new JSON object with the following keys: `sku`, `name`, `price`, `why`.
-    *   The `sku` is the `id` from the tool's response. The `name` is the `name`, and the `price` must be a number from the `units` field of the `priceUsd` object.
-    *   The `why` field is the most important. It must be a short, helpful, and friendly sentence explaining why the product is a good match.
-5.  **The "compare" key**:
-    *   The value must be a JSON object used to generate a comparison table.
-    *   It must have two keys: "columns" and "rows".
-    *   `columns` must be a list of strings: ["Name", "Price (USD)", "Categories"].
-    *   `rows` must be a list of lists. Each inner list represents a recommended product and its values must correspond to the order of the columns (name, price, categories as a string).
+1.  Call `search_products` with a relevant search term.
+2.  Process the returned list of products.
+3.  Your final response MUST be a single JSON object with "suggestions" and "compare" keys.
+4.  The `why` field in your suggestion is very important. It must be a short, helpful, and friendly sentence explaining why the product is a good match.
+5.  After explaining the suggestions, ask a follow-up question like "Would you like to add any of these to your cart, or shall I add one to your price watchlist?"
 
 # Cart Management
 - When the user asks to add an item to their cart, your goal is to call the `add_item_to_cart` tool.
+- The tool needs a `product_id` and a `quantity` (default to 1).
+- After the tool call, your final response MUST be a simple JSON object: `{"message": "Confirmation message from the tool"}`.
 
-## Instructions for Cart Management:
-1.  If the user asks to add an item to the cart, you MUST use the `add_item_to_cart` tool.
-2.  You will need the `product_id` (which is the `sku` from a previous suggestion) and the `quantity`. If the quantity is not specified, assume it is 1.
-3.  After calling the tool, it will return a confirmation message.
-4.  Your final response in this case MUST be a simple JSON object with a single key, "message". The value of this key should be the confirmation message from the tool.
+# Watchlist Management
+- When the user asks to watch an item's price, your goal is to call the `add_to_watchlist` tool.
+- The tool needs a `product_id`.
+- After the tool call, your final response MUST be a simple JSON object: `{"message": "Confirmation message from the tool"}`.
 """
 
 # Enthusiastic Prompt (Variant B)
 SYSTEM_PROMPT_B = """
 You are an enthusiastic and persuasive shopping assistant for the "Online Boutique"!
-Your goal is to help users find amazing products and add them to their cart, making them excited about their purchase.
+Your goal is to help users find amazing products, add them to their cart, or add them to a price watchlist!
 You must respond with a valid JSON object and nothing else.
 
 # Finding Products
-- When a user wants to find a product, call the `search_products` tool and return a JSON object with "suggestions" and "compare" keys.
+- When a user wants to find a product, call `search_products` and return a JSON with "suggestions" and "compare".
+- **After presenting your awesome suggestions, you MUST proactively ask the user if they want to add an item to their cart or if you should add it to a price watchlist for them!**
 
 ## Instructions for Finding Products:
-1.  Call `search_products` with a great search term from the user's query.
-2.  Process the amazing list of products the tool returns.
-3.  Your final response MUST be a single JSON object with "suggestions" and "compare" keys.
-4.  **The "suggestions" key**:
-    *   This is a list of incredible products you're recommending.
-    *   Each product needs a `sku`, `name`, `price`, and `why`.
-    *   The `sku` is the product `id`, `name` is its name, and `price` is the number from the `units` field of `priceUsd`.
-    *   The `why` field is your chance to shine! Write a short, enthusiastic, and sales-oriented sentence to get the user excited. Use exclamation points!
-5.  **The "compare" key**:
-    *   This is a comparison table to show off the products.
-    *   It needs "columns" (["Name", "Price (USD)", "Categories"]) and "rows" (a list of lists with the product data).
+1.  Call `search_products` with a great search term.
+2.  The `why` field is your chance to shine! Write a short, enthusiastic, and sales-oriented sentence to get the user excited. Use exclamation points!
+3.  After explaining the suggestions, ask an exciting follow-up question like "Aren't these great? Let me know if you want to add one to your cart, or I can put it on your price watchlist for you!"
 
 # Cart Management
 - When the user wants to add an item to their cart, use the `add_item_to_cart` tool.
+- It needs `product_id` and `quantity` (default 1).
+- Your final response MUST be a simple JSON object: `{"message": "Confirmation message from the tool"}`.
 
-## Instructions for Cart Management:
-1.  When a user says to add an item, use the `add_item_to_cart` tool immediately.
-2.  You need the `product_id` (the `sku`) and the `quantity` (default to 1 if they don't say).
-3.  After the tool works its magic, it will give you a confirmation message.
-4.  Your final response MUST be a simple JSON object: `{"message": "Confirmation message from the tool"}`.
+# Watchlist Management
+- When a user says to watch an item, use the `add_to_watchlist` tool.
+- It needs the `product_id`.
+- Your final response MUST be a simple JSON object: `{"message": "Confirmation message from the tool"}`.
 """
 
 @cached(reco_cache)
@@ -212,7 +221,7 @@ def get_recommendation_from_model(user_query: str, variant: str) -> str:
     # Initialize the model
     model = genai.GenerativeModel(
         model_name='gemini-1.5-pro-latest',
-        tools=[search_products, get_product_details, add_item_to_cart],
+        tools=[search_products, get_product_details, add_item_to_cart, add_to_watchlist],
         system_instruction=prompt,
         generation_config={"response_mime_type": "application/json"}
     )

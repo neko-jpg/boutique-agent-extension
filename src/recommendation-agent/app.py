@@ -1,8 +1,30 @@
 import os
 import requests
 import json
+import time
 from flask import Flask, request, jsonify
 import google.generativeai as genai
+
+# --- Observability ---
+from opentelemetry import metrics
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader, ConsoleMetricExporter
+from opentelemetry.sdk.resources import Resource
+
+# For a real-world application, you would export to a system like Prometheus or Cloud Monitoring
+# For this demo, we're exporting to the console.
+resource = Resource(attributes={"service.name": "recommendation-agent"})
+reader = PeriodicExportingMetricReader(ConsoleMetricExporter())
+provider = MeterProvider(resource=resource, metric_readers=[reader])
+metrics.set_meter_provider(provider)
+
+meter = metrics.get_meter("recommendation.agent")
+llm_latency_metric = meter.create_histogram(
+    "llm.latency",
+    unit="ms",
+    description="The latency of the call to the generative AI model"
+)
+
 
 app = Flask(__name__)
 
@@ -65,14 +87,22 @@ You must respond with a valid JSON object and nothing else.
 ## Your instructions:
 1.  When you receive a query from a user, call the `search_products` tool with a relevant search term from the user's query.
 2.  The tool will return a JSON string containing a list of products. You need to process this list.
-3.  Your final response to the user MUST be a single JSON object. This object must have one key: "suggestions".
-4.  The value of "suggestions" must be a list of JSON objects, where each object represents a product you recommend.
-5.  For each product, you must extract the `id`, `name`, and `priceUsd` object from the tool's response.
-6.  You must create a new JSON object for each product with the following keys: `sku`, `name`, `price`, `why`.
-7.  The `sku` in your output is the `id` from the tool's response.
-8.  The `name` in your output is the `name` from the tool's response.
-9.  The `price` in your output must be a number, which you will take from the `units` field of the `priceUsd` object.
-10. The `why` field is the most important. It must be a short, helpful, and friendly sentence explaining why the product is a good match for the user's original query.
+3.  Your final response to the user MUST be a single JSON object with two top-level keys: "suggestions" and "compare".
+
+4.  **The "suggestions" key**:
+    *   The value must be a list of JSON objects, where each object represents a product you recommend.
+    *   For each product, create a new JSON object with the following keys: `sku`, `name`, `price`, `why`.
+    *   The `sku` is the `id` from the tool's response.
+    *   The `name` is the `name` from the tool's response.
+    *   The `price` must be a number from the `units` field of the `priceUsd` object.
+    *   The `why` field is the most important. It must be a short, helpful, and friendly sentence explaining why the product is a good match for the user's original query.
+
+5.  **The "compare" key**:
+    *   The value must be a JSON object used to generate a comparison table.
+    *   It must have two keys: "columns" and "rows".
+    *   `columns` must be a list of strings: ["Name", "Price (USD)", "Categories"].
+    *   `rows` must be a list of lists. Each inner list represents a recommended product and its values must correspond to the order of the columns.
+    *   The values in each row must be the `name`, the `price` (as a number), and the `categories` (as a single string, joined by ", ").
 
 ## Example:
 IF the user query is "I need some comfortable shoes"
@@ -85,12 +115,16 @@ AND the tool returns this JSON string:
     "name": "Running Shoes",
     "description": "Comfortable and stylish running shoes.",
     "picture": "...",
-    "priceUsd": {
-      "currencyCode": "USD",
-      "units": "120",
-      "nanos": 750000000
-    },
+    "priceUsd": { "currencyCode": "USD", "units": "120", "nanos": 750000000 },
     "categories": ["footwear", "running"]
+  },
+  {
+    "id": "LS4PSXUN15",
+    "name": "Comfy Slippers",
+    "description": "Ultra-soft slippers for indoor use.",
+    "picture": "...",
+    "priceUsd": { "currencyCode": "USD", "units": "40", "nanos": 0 },
+    "categories": ["footwear", "slippers"]
   }
 ]
 ```
@@ -104,8 +138,21 @@ THEN your final response to the user MUST be this exact JSON object:
       "name": "Running Shoes",
       "price": 120,
       "why": "These running shoes are a great choice as they are described as both comfortable and stylish, perfect for your needs."
+    },
+    {
+      "sku": "LS4PSXUN15",
+      "name": "Comfy Slippers",
+      "price": 40,
+      "why": "These ultra-soft slippers are an excellent option for comfort at home."
     }
-  ]
+  ],
+  "compare": {
+    "columns": ["Name", "Price (USD)", "Categories"],
+    "rows": [
+      ["Running Shoes", 120, "footwear, running"],
+      ["Comfy Slippers", 40, "footwear, slippers"]
+    ]
+  }
 }
 ```
 Now, begin.
@@ -114,7 +161,8 @@ Now, begin.
 model = genai.GenerativeModel(
     model_name='gemini-1.5-pro-latest',
     tools=[search_products, get_product_details],
-    system_instruction=SYSTEM_PROMPT
+    system_instruction=SYSTEM_PROMPT,
+    generation_config={"response_mime_type": "application/json"}
 )
 
 # --- Flask API Endpoint ---
@@ -131,21 +179,26 @@ def recommend():
     chat = model.start_chat(enable_automatic_function_calling=True)
 
     try:
+        start_time = time.time()
         response = chat.send_message(user_query)
-        # The model should directly return the JSON string as instructed.
-        # We need to find the JSON block in the response, as the model might add backticks.
-        response_text = response.text.strip()
-        json_start = response_text.find('{')
-        json_end = response_text.rfind('}') + 1
-        if json_start == -1 or json_end == 0:
-            raise json.JSONDecodeError("No JSON object found in response", response_text, 0)
+        end_time = time.time()
 
-        json_str = response_text[json_start:json_end]
-        final_json_response = json.loads(json_str)
+        # Record the latency
+        latency_ms = (end_time - start_time) * 1000
+        llm_latency_metric.record(latency_ms)
+        print(f"METRIC: LLM latency: {latency_ms:.2f} ms")
+
+
+        # With JSON mode enabled, the response text is a guaranteed JSON string.
+        final_json_response = json.loads(response.text)
         return jsonify(final_json_response)
 
     except (json.JSONDecodeError, Exception) as e:
-        error_message = f"Failed to get a valid JSON response from the model. Error: {e}. Raw response: {response.text if 'response' in locals() else 'N/A'}"
+        # Check if response object exists before trying to access its text attribute
+        raw_response_text = "N/A"
+        if 'response' in locals() and hasattr(response, 'text'):
+            raw_response_text = response.text
+        error_message = f"Failed to get a valid JSON response from the model. Error: {e}. Raw response: {raw_response_text}"
         print(f"API ERROR: {error_message}")
         return jsonify({"error": error_message}), 500
 

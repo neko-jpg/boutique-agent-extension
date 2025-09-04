@@ -47,6 +47,14 @@ build:
     context: src/frontend
   - image: adservice
     context: src/adservice
+  - image: agent-gateway
+    context: src/agent-gateway
+  - image: catalog-reader
+    context: src/catalog-reader
+  - image: recommendation-agent
+    context: src/recommendation-agent
+  - image: promo-agent
+    context: src/promo-agent
   tagPolicy:
     gitCommit: {}
   local:

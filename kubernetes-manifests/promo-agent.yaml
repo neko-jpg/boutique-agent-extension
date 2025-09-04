@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: promo-agent
+spec:
+  selector:
+    matchLabels:
+      app: promo-agent
+  template:
+    metadata:
+      labels:
+        app: promo-agent
+    spec:
+      containers:
+      - name: server
+        image: promo-agent # This will be replaced by the CI/CD pipeline
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: CATALOG_READER_URL
+          value: "http://catalog-reader:80"
+        # In a real cluster, the Slack Webhook URL should be stored in a Kubernetes secret
+        # and mounted as an environment variable here.
+        # Example:
+        # - name: SLACK_WEBHOOK_URL
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: promo-agent-secrets
+        #       key: slack_webhook_url
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: promo-agent
+spec:
+  type: ClusterIP
+  selector:
+    app: promo-agent
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080

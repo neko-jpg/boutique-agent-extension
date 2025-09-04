@@ -13,6 +13,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application's code into the container at /app
 COPY . .
 
+# Generate the gRPC stubs from the proto files
+RUN python -m grpc_tools.protoc -I./protos --python_out=. --grpc_python_out=. ./protos/demo.proto
+
 # Make port 8080 available to the world outside this container
 EXPOSE 8080
 
